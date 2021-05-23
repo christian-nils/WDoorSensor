@@ -6,18 +6,6 @@
 #include <EEPROM.h>
 #include "WTuyaDevice.h"
 
-#define COUNT_DEVICE_MODELS 2
-#define MODEL_BHT_002_GBLW 0
-#define MODEL_BAC_002_ALW 1
-#define HEARTBEAT_INTERVAL 10000
-#define MINIMUM_INTERVAL 2000
-#define STATE_COMPLETE 1
-
-const char* BATTERY_LOW = "low";
-const char* BATTERY_MEDIUM = "medium";
-const char* BATTERY_HIGH = "high";
-
-
 class WDoorSensorDevice: public WTuyaDevice {
 public:
 
@@ -26,18 +14,19 @@ public:
 		this->open = new WProperty("open", "Open", BOOLEAN, TYPE_OPEN_PROPERTY);
     this->open->setReadOnly(true);
 	  this->addProperty(open);
-    this->battery = new WProperty("battery", "Battery", STRING, "");
-    this->battery->addEnumString(BATTERY_LOW);
-    this->battery->addEnumString(BATTERY_MEDIUM);
-    this->battery->addEnumString(BATTERY_HIGH);
+    this->tampered_open = new WProperty("tampered_open", "Tampered Sensor Open", BOOLEAN, TYPE_OPEN_PROPERTY);
+    this->tampered_open->setReadOnly(true);
+	  this->addProperty(tampered_open);
+    this->battery = new WProperty("battery", "Battery", INTEGER, "");
     this->battery->setReadOnly(true);
     this->addProperty(battery);
+    this->initializationStep = 0;
     this->configButtonPressed = false;
     this->notifyAllMcuCommands->setBoolean(false);
   }
 
   bool isDeviceStateComplete() {
-    return ((!this->open->isNull()) && (!this->battery->isNull()));
+    return ((!this->open->isNull()) && (!this->tampered_open->isNull()) && (!this->battery->isNull()));
   }
 
   virtual void cancelConfiguration() {
@@ -69,6 +58,15 @@ public:
     commandCharsToSerial(6 +  (value != 0xFF ? 1 : 0), tuyaCommand);
   }
 
+  void commandTuyaToSerial(byte commandByte, byte value0, byte value1) {
+    unsigned char tuyaCommand[] = { 0x55, 0xAA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    tuyaCommand[3] = commandByte;
+    tuyaCommand[5] = 0x02;
+    tuyaCommand[6] = (value0 != 0xFF ? value0 : 0x00);
+    tuyaCommand[7] = (value0 != 0xFF ? value0 : 0x00);
+    commandCharsToSerial(8, tuyaCommand);
+  }
+
   void queryDeviceState() {
     if (!this->configButtonPressed) {
       network->debug(F("Query state of MCU..."));
@@ -80,20 +78,57 @@ public:
 
   virtual bool processCommand(byte commandByte, byte length) {
     bool knownCommand = false;
+    // Initialization sequence:
+        // MCU: 55 AA 00 01 00 25 7B 22 70 22 3A 22 64 7A 70 68 67 6D 72 6D 30 6A 30 68 6C 78 66 70 22 2C 22 76 22 3A 22 31 2E 30 2E 31 37 22 7D 2D 
+        // ESP: 55 AA 00 02 00 01 02 04 (0)
+        // MCU: 55 AA 00 02 00 00 01 
+        // ESP: 55 AA 00 02 00 01 02 04 (1)
+        // MCU: 55 AA 00 02 00 00 01 
+        // ESP: 55 AA 00 02 00 01 03 05 (2)
+        // MCU: 55 AA 00 02 00 00 01 
+        // ESP: 55 AA 00 02 00 01 04 06 (3)
+        // MCU: 55 AA 00 02 00 00 01 
+        // ESP: 55 AA 00 05 00 01 00 05 (4) if device initialized otherwise 
+                
     switch (commandByte) {
+      // network->debug(F("commandByte received: '%a'"), commandByte);
       case 0x01: {
-        //Response to initilization request commandTuyaToSerial(0x01);
+        //Response to initialization request commandTuyaToSerial(0x01);
         //55 aa 00 01 00 24 7b 22 70 22 3a 22 68 78 35 7a 74 6c 7a 74 69 6a 34 79 78 78 76 67 22 2c 22 76 22 3a 22 31 2e 30 2e 30 22 7d
+
+        //CN: 55 AA 00 01 00 25 7B 22 70 22 3A 22 64 7A 70 68 67 6D 72 6D 30 6A 30 68 6C 78 66 70 22 2C 22 76 22 3A 22 31 2E 30 2E 31 37 22 7D 2D
+        this->initializationStep = 1; 
         commandTuyaToSerial(0x02, 2);
         knownCommand = true;
         break;
       }
       case 0x02: {
-        //Basic confirmation 55 aa 00 02 00 00
+
         if (length == 0) {
-          //request device state
-          commandTuyaToSerial(0x02, 4);
+
+          switch(this->initializationStep){
+            case 1:
+              commandTuyaToSerial(0x02, 2);
+              this->initializationStep = 2; 
+              break;
+            
+            case 2:
+              commandTuyaToSerial(0x02, 3);
+              this->initializationStep = 3; 
+              break;
+            
+            case 3:
+              commandTuyaToSerial(0x02, 4);
+              this->initializationStep = 4; 
+              break;          
+            case 4:
+              this->initializationStep = 0; 
+              break;
+            default:
+              commandTuyaToSerial(0x02, 4);
+          }          
           knownCommand = true;
+
         }
         break;
       }
@@ -113,18 +148,22 @@ public:
         break;
       }
       case 0x05: {
-        //55 aa 00 05 00 05 01 01 00 01 00 //0: closed 1: open
-        //55 aa 00 05 00 05 03 04 00 01 02 //2: ok 0: low battery
-        if (length == 5) {
-          if ((receivedCommand[6] == 1) && (receivedCommand[7] == 1)) {
-            //door state
-            this->open->setBoolean(receivedCommand[10] == 0x01);
-            knownCommand = true;
-          } else if ((receivedCommand[6] == 3) && (receivedCommand[7] == 4)) {
-            //battery state
-            battery->setString(battery->getEnumString(receivedCommand[10]));
-            knownCommand = true;
-          }
+        // 55 aa 00 05 00 12 65 01 00 01 01 66 01 00 01 01 67 02 00 04 00 00 00 64
+        
+        // Cleverio Door Sensor:
+            // - 65 01 00 01 01: door switch open | 65 01 00 01 00: door switch closed
+            // - 66 01 00 01 01: tampered switch open | 66 01 00 01 00: tampered switch closed
+            // - 67 02 00 04 00 00 00: battery level 
+        if (length == 0x12) {
+          //door state
+          this->open->setBoolean(receivedCommand[10] == 0x01);
+          this->tampered_open->setBoolean(receivedCommand[15] == 0x01);
+          this->battery->setInteger((int)receivedCommand[23]);
+          commandTuyaToSerial(0x05, 0);
+          knownCommand = true;
+          
+          //battery state
+          // battery->setString(battery->getEnumString(receivedCommand[10]));
         }
         break;
       }
@@ -133,15 +172,20 @@ public:
   }
 
   virtual bool processStatusCommand(byte statusCommandByte, byte length) {
-    //Sometimes 55 aa 00 07 00 00, mostly at entering configuration, ignore
-    return (length == 0);
+    bool knownCommand = false;
+    if (length == 0) {
+      commandTuyaToSerial(0x07, 0, 0); 
+      knownCommand = true;
+    }
+    return knownCommand;
   }
 
 private:
   bool configButtonPressed;
-	WProperty* open;
-  WProperty* battery;
-
+	WProperty* open; // door sensor
+  WProperty* tampered_open; // tampered sensor
+  WProperty* battery; // battery level
+  int initializationStep;
 };
 
 

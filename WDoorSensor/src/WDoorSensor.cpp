@@ -4,9 +4,9 @@
 #include "WStringStream.h"
 
 #define APPLICATION "Door Window Sensor"
-#define VERSION "1.20"
+#define VERSION "1.20_CN"
 #define FLAG_SETTINGS 0x17
-#define DEBUG false
+#define DEBUG true
 
 WNetwork* network;
 WDoorSensorDevice* dsDevice;
@@ -21,17 +21,17 @@ void setup() {
 			//nothing to do
 		}
 		if (network->isMqttConnected()) {
-			if (dsDevice->isDeviceStateComplete()) {
-				network->debug(F("state complete"));
-			} else {
-				network->debug(F("state not complete"));
-					dsDevice->queryDeviceState();
-			}
-
+			// if (dsDevice->isDeviceStateComplete()) {
+			// 	network->debug(F("state complete"));
+			// } else {
+			// 	network->debug(F("state not complete"));
+			// 	dsDevice->queryDeviceState();
+			// }
+			dsDevice->queryDeviceState();
 		}
 	});
 	network->setOnConfigurationFinished([]() {
-		//Switch blinking thermostat in normal operating mode back
+		//Switch blinking device in normal operating mode back
 		network->debug(F("cancel config"));
 		dsDevice->cancelConfiguration();
 	});
