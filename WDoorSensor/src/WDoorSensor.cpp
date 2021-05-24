@@ -4,9 +4,9 @@
 #include "WStringStream.h"
 
 #define APPLICATION "Door Window Sensor"
-#define VERSION "1.20_CN"
-#define FLAG_SETTINGS 0x17
-#define DEBUG true
+#define VERSION "1.22_CN"
+#define FLAG_SETTINGS 0x22
+#define DEBUG false
 
 WNetwork* network;
 WDoorSensorDevice* dsDevice;
